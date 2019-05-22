@@ -1,2 +1,9 @@
 skylight
 .DS_Store
+
+demo/src/coverage.txt
+demo/fuzz/src
+demo/fuzz/out/*/crashers
+demo/fuzz/out/*/suppressions
+demo/fuzz/out/*/corpus/[0-9a-f]*
+gofuzzdep-fuzz.zip
