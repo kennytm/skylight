@@ -123,23 +123,17 @@ func findRange(ranges []codeRange, cr *codeRange) findRangeResult {
 }
 
 func replaceStmt(fs *token.FileSet, funcIdent *ast.Ident, node ast.Stmt) ast.Stmt {
-	start := node.Pos()
-	end := node.End()
-	msg := fmt.Sprintf(`"<[[SKYLIGHT]]> hit uncovered statement at %s"`, fs.Position(start))
+	start := fs.Position(node.Pos())
+	msg := fmt.Sprintf(`"<[[SKYLIGHT]]> hit uncovered statement at %s"`, start)
 	return &ast.BlockStmt{
-		Lbrace: start,
-		Rbrace: end,
 		List: []ast.Stmt{
 			&ast.ExprStmt{
 				X: &ast.CallExpr{
-					Fun:    funcIdent,
-					Lparen: start,
-					Rparen: start,
+					Fun: funcIdent,
 					Args: []ast.Expr{
 						&ast.BasicLit{
-							ValuePos: start,
-							Kind:     token.STRING,
-							Value:    msg,
+							Kind:  token.STRING,
+							Value: msg,
 						},
 					},
 				},
@@ -149,9 +143,24 @@ func replaceStmt(fs *token.FileSet, funcIdent *ast.Ident, node ast.Stmt) ast.Stm
 	}
 }
 
-func rewriteNode(ranges []codeRange, fs *token.FileSet, funcIdent *ast.Ident, node ast.Node) (ast.Node, bool) {
+func isDecl(stmt ast.Stmt) bool {
+	switch s := stmt.(type) {
+	case *ast.DeclStmt:
+		return true
+	case *ast.AssignStmt:
+		return s.Tok == token.DEFINE
+	default:
+		return false
+	}
+}
+
+func rewriteNode(ranges []codeRange, fs *token.FileSet, funcIdent *ast.Ident, skippedNodes map[ast.Node]struct{}, node ast.Node) (ast.Node, bool) {
 	if node == nil {
 		return nil, true
+	}
+	if _, ok := skippedNodes[node]; ok {
+		delete(skippedNodes, node)
+		return node, true
 	}
 
 	cr := makeCodeRangeFromNode(fs, node)
@@ -161,11 +170,31 @@ func rewriteNode(ranges []codeRange, fs *token.FileSet, funcIdent *ast.Ident, no
 	case findRangeResultOverlapping:
 		break
 	case findRangeResultContained:
-		if stmt, ok := node.(ast.Stmt); ok {
+		if stmt, ok := node.(ast.Stmt); ok && !isDecl(stmt) {
 			return replaceStmt(fs, funcIdent, stmt), false
 		}
 	}
 
+	switch s := node.(type) {
+	case *ast.ForStmt:
+		if isDecl(s.Init) {
+			skippedNodes[s.Init] = struct{}{}
+		}
+		skippedNodes[s.Post] = struct{}{}
+	case *ast.TypeSwitchStmt:
+		if isDecl(s.Init) {
+			skippedNodes[s.Init] = struct{}{}
+		}
+		skippedNodes[s.Assign] = struct{}{}
+	case *ast.SwitchStmt:
+		if isDecl(s.Init) {
+			skippedNodes[s.Init] = struct{}{}
+		}
+	case *ast.IfStmt:
+		if isDecl(s.Init) {
+			skippedNodes[s.Init] = struct{}{}
+		}
+	}
 	return node, true
 
 }
@@ -216,8 +245,9 @@ func main() {
 			log.Fatalf("cannot parse `%s`: %v", srcPath, err)
 		}
 
+		skippedNodes := make(map[ast.Node]struct{})
 		newNode := astrewrite.Walk(node, func(n ast.Node) (ast.Node, bool) {
-			return rewriteNode(ranges, fs, funcIdent, n)
+			return rewriteNode(ranges, fs, funcIdent, skippedNodes, n)
 		})
 
 		outPath := path.Join(*outDir, stem)
